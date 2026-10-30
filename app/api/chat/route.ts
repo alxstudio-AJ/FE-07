@@ -148,26 +148,26 @@ export async function POST(request: Request) {
     return Response.json({ error: "Add lead details before asking Signal to score them." }, { status: 400 });
   }
 
+  if (process.env.NODE_ENV === "development" && sabotage === "mid-stream") {
+    const stream = createUIMessageStream<ChatMessage>({
+      execute: async ({ writer }) => {
+        writer.write({ type: "start" });
+        writer.write({ type: "text-start", id: "interrupted-demo" });
+        writer.write({
+          type: "text-delta",
+          id: "interrupted-demo",
+          delta: "I’ve started reviewing this lead, but the response was interrupted.",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        throw new Error("Development-only simulated stream interruption.");
+      },
+      onError: () => "The response was interrupted before scoring finished.",
+    });
+
+    return createUIMessageStreamResponse({ stream });
+  }
+
   if (!process.env.OPENAI_API_KEY) {
-    if (process.env.NODE_ENV === "development" && sabotage === "mid-stream") {
-      const stream = createUIMessageStream<ChatMessage>({
-        execute: async ({ writer }) => {
-          writer.write({ type: "start" });
-          writer.write({ type: "text-start", id: "interrupted-demo" });
-          writer.write({
-            type: "text-delta",
-            id: "interrupted-demo",
-            delta: "I’ve started reviewing this lead, but the response was interrupted.",
-          });
-          await new Promise((resolve) => setTimeout(resolve, 350));
-          throw new Error("Development-only simulated stream interruption.");
-        },
-        onError: () => "The response was interrupted before scoring finished.",
-      });
-
-      return createUIMessageStreamResponse({ stream });
-    }
-
     return createDemoResponse(messages);
   }
 

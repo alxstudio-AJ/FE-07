@@ -29,6 +29,7 @@ export default function Home() {
   const chatBodyRef = useRef<HTMLDivElement>(null);
   const { messages, sendMessage, status, error } = useChat<ChatMessage>();
   const isBusy = status === "submitted" || status === "streaming";
+  const hasRequestError = Boolean(error || requestError);
   const failedMessage = error || requestError
     ? [...messages].reverse().find((message) => message.role === "user")
     : undefined;
@@ -87,16 +88,20 @@ export default function Home() {
   }
 
   function retryFailedMessage() {
-    if (!failedMessage || requestPending.current || isBusy) return;
+    retryUserMessage(failedMessage);
+  }
 
-    const text = failedMessage.parts
+  function retryUserMessage(message: ChatMessage | undefined) {
+    if (!message || requestPending.current || isBusy) return;
+
+    const text = message.parts
       .filter((part) => part.type === "text")
       .map((part) => part.text)
       .join("\n");
     requestPending.current = true;
     setRequestError(undefined);
     void sendMessage(
-      { text, messageId: failedMessage.id },
+      { text, messageId: message.id },
       { headers: getSabotageHeaders() },
     )
       .catch(() => {
@@ -162,7 +167,9 @@ export default function Home() {
         <header className="topbar">
           <div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>Lead scoring</strong></div>
           <div className="topbar-right">
-            <span className="live-status"><span className="status-dot" /> System operational</span>
+            <span className={`live-status${hasRequestError ? " degraded" : ""}`}>
+              <span className="status-dot" /> {hasRequestError ? "Request needs attention" : "System operational"}
+            </span>
             <button className="help-button" aria-label="Help">?</button>
           </div>
         </header>
@@ -259,7 +266,7 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="message-list">
-                    {messages.map((message) => (
+                    {messages.map((message, messageIndex) => (
                       <article key={message.id} className={`message ${message.role === "user" ? "user-message" : "assistant-message"}`}>
                         <div className="message-meta">
                           <span className={`message-avatar ${message.role === "user" ? "user-avatar" : "ai-avatar"}`}>
@@ -274,7 +281,19 @@ export default function Home() {
                               return <p className="message-text" key={`${message.id}-text-${index}`}>{part.text}</p>;
                             }
                             if (part.type === "tool-scoreLead") {
-                              return <ToolPart key={part.toolCallId} part={part} />;
+                              const failedUserMessage =
+                                message.role === "assistant" && part.state === "output-error"
+                                  ? [...messages.slice(0, messageIndex)]
+                                      .reverse()
+                                      .find((candidate) => candidate.role === "user")
+                                  : undefined;
+                              return (
+                                <ToolPart
+                                  key={part.toolCallId}
+                                  part={part}
+                                  onRetry={failedUserMessage ? () => retryUserMessage(failedUserMessage) : undefined}
+                                />
+                              );
                             }
                             return null;
                           })}
@@ -352,7 +371,13 @@ function ResponseSkeleton() {
   );
 }
 
-function ToolPart({ part }: { part: ScoreLeadPart }) {
+function ToolPart({
+  part,
+  onRetry,
+}: {
+  part: ScoreLeadPart;
+  onRetry?: () => void;
+}) {
   if (part.state === "input-streaming") {
     return (
       <div className="tool-state tool-streaming">
@@ -380,7 +405,12 @@ function ToolPart({ part }: { part: ScoreLeadPart }) {
     return (
       <div className="tool-state tool-error" role="alert">
         <div className="tool-state-icon"><ErrorIcon /></div>
-        <div><span className="tool-state-label">TOOL ERROR · SCORE LEAD</span><strong>We couldn’t score this lead.</strong><p>{part.errorText || "The scoring service had a problem. Check the lead details and try again."}</p></div>
+        <div>
+          <span className="tool-state-label">TOOL ERROR · SCORE LEAD</span>
+          <strong>We couldn’t score this lead.</strong>
+          <p>{part.errorText || "The scoring service had a problem. Check the lead details and try again."}</p>
+          {onRetry && <button className="retry-button tool-retry-button" onClick={onRetry}>Retry this lead</button>}
+        </div>
       </div>
     );
   }
