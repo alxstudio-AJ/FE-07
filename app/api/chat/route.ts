@@ -3,6 +3,7 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
+  safeValidateUIMessages,
   stepCountIs,
   streamText,
   type UIMessage,
@@ -13,6 +14,7 @@ import { scoreLeadInputSchema, scoreLeadTool } from "@/lib/tools/score-lead";
 export const maxDuration = 30;
 
 type ChatMessage = UIMessage;
+const sabotageHeader = "x-demo-sabotage";
 
 function getText(message: ChatMessage): string {
   return message.parts
@@ -106,10 +108,66 @@ function createDemoResponse(messages: ChatMessage[]) {
 }
 
 export async function POST(request: Request) {
-  const body: { messages?: ChatMessage[] } = await request.json();
-  const messages = body.messages ?? [];
+  const sabotage = request.headers.get(sabotageHeader);
+  if (process.env.NODE_ENV === "development" && sabotage === "rate-limit") {
+    return Response.json(
+      { error: "Signal is receiving too many requests. Please retry shortly." },
+      { status: 429, headers: { "Retry-After": "5" } },
+    );
+  }
+
+  if (process.env.NODE_ENV === "development" && sabotage === "malformed-json") {
+    return new Response("{ malformed response", {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return Response.json({ error: "The request body must be valid JSON." }, { status: 400 });
+    }
+    throw error;
+  }
+
+  if (typeof body !== "object" || body === null || !("messages" in body)) {
+    return Response.json({ error: "The request must include chat messages." }, { status: 400 });
+  }
+
+  const validation = await safeValidateUIMessages({ messages: body.messages });
+  if (!validation.success) {
+    return Response.json({ error: "The submitted chat messages were invalid." }, { status: 400 });
+  }
+
+  const messages = validation.data;
+  const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
+  if (!latestUserMessage || !getText(latestUserMessage).trim()) {
+    return Response.json({ error: "Add lead details before asking Signal to score them." }, { status: 400 });
+  }
 
   if (!process.env.OPENAI_API_KEY) {
+    if (process.env.NODE_ENV === "development" && sabotage === "mid-stream") {
+      const stream = createUIMessageStream<ChatMessage>({
+        execute: async ({ writer }) => {
+          writer.write({ type: "start" });
+          writer.write({ type: "text-start", id: "interrupted-demo" });
+          writer.write({
+            type: "text-delta",
+            id: "interrupted-demo",
+            delta: "I’ve started reviewing this lead, but the response was interrupted.",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 350));
+          throw new Error("Development-only simulated stream interruption.");
+        },
+        onError: () => "The response was interrupted before scoring finished.",
+      });
+
+      return createUIMessageStreamResponse({ stream });
+    }
+
     return createDemoResponse(messages);
   }
 
@@ -122,5 +180,7 @@ export async function POST(request: Request) {
     stopWhen: stepCountIs(3),
   });
 
-  return result.toUIMessageStreamResponse();
+  return result.toUIMessageStreamResponse({
+    onError: () => "Signal couldn’t finish the response. Please retry the failed scoring request.",
+  });
 }

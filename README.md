@@ -39,3 +39,9 @@ Open [http://localhost:3000](http://localhost:3000). Without an API key the app 
 ```
 
 The shared schema and `execute` implementation live in [`lib/tools/score-lead.ts`](./lib/tools/score-lead.ts). The AI chat route is [`app/api/chat/route.ts`](./app/api/chat/route.ts). Tool inputs, streaming, successful outputs, and failures each have their own presentation in the chat.
+
+## Failure checks
+
+In development, use the **Failure check** menu below the chat to simulate an interrupted stream, an HTTP 429, or a malformed API response. The stream-interruption check uses demo mode (no `OPENAI_API_KEY`); the other checks work with or without a key. Retry resends the exact failed user message, including its original lead details.
+
+To check an offline send or a slow connection, use the browser's Network panel to switch offline or throttle requests before scoring a lead. The response skeleton appears while the request is waiting for its stream to begin.

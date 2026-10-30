@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LeadScore, ScoreLeadInput } from "@/lib/tools/score-lead";
 
 type ChatMessage = UIMessage<
@@ -10,6 +10,7 @@ type ChatMessage = UIMessage<
   never,
   { scoreLead: { input: ScoreLeadInput; output: LeadScore } }
 >;
+type SabotageMode = "off" | "mid-stream" | "rate-limit" | "malformed-json";
 
 const initialLead: ScoreLeadInput = {
   name: "Priya Sharma",
@@ -21,15 +22,97 @@ const initialLead: ScoreLeadInput = {
 
 export default function Home() {
   const [lead, setLead] = useState(initialLead);
+  const [formError, setFormError] = useState<string>();
+  const [requestError, setRequestError] = useState<string>();
+  const [sabotageMode, setSabotageMode] = useState<SabotageMode>("off");
+  const requestPending = useRef(false);
+  const chatBodyRef = useRef<HTMLDivElement>(null);
   const { messages, sendMessage, status, error } = useChat<ChatMessage>();
   const isBusy = status === "submitted" || status === "streaming";
+  const failedMessage = error || requestError
+    ? [...messages].reverse().find((message) => message.role === "user")
+    : undefined;
+  const errorDetails = `${error?.message ?? ""} ${requestError ?? ""}`.toLowerCase();
+  const errorMessage = requestError
+    ? requestError
+    : errorDetails.includes("429") || errorDetails.includes("too many requests")
+      ? "Signal is handling a lot of requests. Wait a moment, then retry this lead."
+      : errorDetails.includes("interrupted")
+        ? "The response stopped before scoring finished. Your lead details are still here."
+        : "Signal couldn’t finish this request. Check your connection, then retry the failed lead.";
+
+  useEffect(() => {
+    const chatBody = chatBodyRef.current;
+    if (chatBody) {
+      chatBody.scrollTop = chatBody.scrollHeight;
+    }
+  }, [messages, status]);
 
   function updateLead<K extends keyof ScoreLeadInput>(key: K, value: ScoreLeadInput[K]) {
     setLead((current) => ({ ...current, [key]: value }));
   }
 
   function scoreCurrentLead() {
-    sendMessage({ text: `Score lead: ${JSON.stringify(lead)}` });
+    if (requestPending.current || isBusy) return;
+
+    const normalizedLead = {
+      name: lead.name.trim(),
+      company: lead.company.trim(),
+      jobTitle: lead.jobTitle.trim(),
+      companySize: lead.companySize,
+      buyingIntent: lead.buyingIntent,
+    };
+    if (
+      normalizedLead.name.length < 2 ||
+      normalizedLead.company.length < 2 ||
+      normalizedLead.jobTitle.length < 2
+    ) {
+      setFormError("Add a name, company, and role with at least two characters each.");
+      return;
+    }
+
+    setFormError(undefined);
+    setRequestError(undefined);
+    requestPending.current = true;
+    void sendMessage(
+      { text: `Score lead: ${JSON.stringify(normalizedLead)}` },
+      { headers: getSabotageHeaders() },
+    )
+      .catch(() => {
+        setRequestError("We couldn’t send this request. Check your connection and try again.");
+      })
+      .finally(() => {
+        requestPending.current = false;
+      });
+  }
+
+  function retryFailedMessage() {
+    if (!failedMessage || requestPending.current || isBusy) return;
+
+    const text = failedMessage.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+    requestPending.current = true;
+    setRequestError(undefined);
+    void sendMessage(
+      { text, messageId: failedMessage.id },
+      { headers: getSabotageHeaders() },
+    )
+      .catch(() => {
+        setRequestError("We couldn’t resend the failed request. Check your connection and try again.");
+      })
+      .finally(() => {
+        requestPending.current = false;
+      });
+  }
+
+  function updateSabotageMode(value: SabotageMode) {
+    setSabotageMode(value);
+  }
+
+  function getSabotageHeaders(): Record<string, string> {
+    return sabotageMode === "off" ? {} : { "x-demo-sabotage": sabotageMode };
   }
 
   return (
@@ -103,45 +186,53 @@ export default function Home() {
                 </div>
                 <span className="panel-icon"><PersonIcon /></span>
               </div>
-              <div className="form-grid">
-                <label className="field full-width">
-                  <span>Full name</span>
-                  <input value={lead.name} onChange={(event) => updateLead("name", event.target.value)} />
-                </label>
-                <label className="field full-width">
-                  <span>Company</span>
-                  <input value={lead.company} onChange={(event) => updateLead("company", event.target.value)} />
-                </label>
-                <label className="field full-width">
-                  <span>Job title</span>
-                  <input value={lead.jobTitle} onChange={(event) => updateLead("jobTitle", event.target.value)} />
-                </label>
-                <label className="field">
-                  <span>Company size</span>
-                  <select value={lead.companySize} onChange={(event) => updateLead("companySize", event.target.value as ScoreLeadInput["companySize"])}>
-                    <option value="1-50">1–50 people</option>
-                    <option value="51-200">51–200 people</option>
-                    <option value="201-1000">201–1,000 people</option>
-                    <option value="1000+">1,000+ people</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Buying intent</span>
-                  <select value={lead.buyingIntent} onChange={(event) => updateLead("buyingIntent", event.target.value as ScoreLeadInput["buyingIntent"])}>
-                    <option value="exploring">Exploring</option>
-                    <option value="evaluating">Evaluating</option>
-                    <option value="ready">Ready to buy</option>
-                  </select>
-                </label>
-              </div>
-              <div className="form-footer">
-                <p><ShieldIcon /> Your lead data stays in this workspace.</p>
-                <button className="score-button" onClick={scoreCurrentLead} disabled={isBusy}>
-                  {isBusy ? <span className="button-spinner" /> : <SparkleIcon />}
-                  {isBusy ? "Scoring…" : "Score this lead"}
-                  {!isBusy && <span className="button-arrow">↗</span>}
-                </button>
-              </div>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  scoreCurrentLead();
+                }}
+              >
+                <div className="form-grid">
+                  <label className="field full-width">
+                    <span>Full name</span>
+                    <input required minLength={2} value={lead.name} onChange={(event) => updateLead("name", event.target.value)} />
+                  </label>
+                  <label className="field full-width">
+                    <span>Company</span>
+                    <input required minLength={2} value={lead.company} onChange={(event) => updateLead("company", event.target.value)} />
+                  </label>
+                  <label className="field full-width">
+                    <span>Job title</span>
+                    <input required minLength={2} value={lead.jobTitle} onChange={(event) => updateLead("jobTitle", event.target.value)} />
+                  </label>
+                  <label className="field">
+                    <span>Company size</span>
+                    <select value={lead.companySize} onChange={(event) => updateLead("companySize", event.target.value as ScoreLeadInput["companySize"])}>
+                      <option value="1-50">1–50 people</option>
+                      <option value="51-200">51–200 people</option>
+                      <option value="201-1000">201–1,000 people</option>
+                      <option value="1000+">1,000+ people</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Buying intent</span>
+                    <select value={lead.buyingIntent} onChange={(event) => updateLead("buyingIntent", event.target.value as ScoreLeadInput["buyingIntent"])}>
+                      <option value="exploring">Exploring</option>
+                      <option value="evaluating">Evaluating</option>
+                      <option value="ready">Ready to buy</option>
+                    </select>
+                  </label>
+                </div>
+                {formError && <p className="field-error" role="alert">{formError}</p>}
+                <div className="form-footer">
+                  <p><ShieldIcon /> Your lead data stays in this workspace.</p>
+                  <button className="score-button" type="submit" disabled={isBusy}>
+                    {isBusy ? <span className="button-spinner" /> : <SparkleIcon />}
+                    {isBusy ? "Scoring…" : "Score this lead"}
+                    {!isBusy && <span className="button-arrow">↗</span>}
+                  </button>
+                </div>
+              </form>
             </section>
 
             <section className="panel copilot-panel" aria-labelledby="copilot-heading">
@@ -154,16 +245,17 @@ export default function Home() {
                 <button className="more-button" aria-label="More options">···</button>
               </div>
 
-              <div className="chat-body" aria-live="polite">
+              <div ref={chatBodyRef} className="chat-body" aria-live="polite" aria-busy={isBusy}>
                 {messages.length === 0 ? (
                   <div className="empty-chat">
                     <div className="empty-orbit"><SparkleIcon /></div>
                     <h3>A little context goes a long way.</h3>
                     <p>I’ll look at fit and intent, then give you a clear recommendation to act on.</p>
-                    <div className="suggestion">
+                    <button className="suggestion suggestion-action" onClick={scoreCurrentLead} disabled={isBusy}>
                       <span className="suggestion-mark">↳</span>
-                      <span>Score a lead using their role, company size, and buying intent.</span>
-                    </div>
+                      <span><strong>Try the sample lead</strong><small>Priya Sharma · Northstar Analytics</small></span>
+                      <span className="suggestion-arrow">↗</span>
+                    </button>
                   </div>
                 ) : (
                   <div className="message-list">
@@ -189,10 +281,27 @@ export default function Home() {
                         </div>
                       </article>
                     ))}
-                    {error && <div className="request-error" role="alert">The request couldn’t be completed. Check your connection and try again.</div>}
+                    {status === "submitted" && <ResponseSkeleton />}
                   </div>
                 )}
               </div>
+              {(error || requestError) && (
+                <div className="request-error" role="alert">
+                  <div className="request-error-copy">
+                    <ErrorIcon />
+                    <div>
+                      <strong>Scoring didn’t finish</strong>
+                      <p>{errorMessage}</p>
+                      {failedMessage && <small>This retries the failed message with its original lead details.</small>}
+                    </div>
+                  </div>
+                  {failedMessage && (
+                    <button className="retry-button" onClick={retryFailedMessage} disabled={isBusy}>
+                      Retry failed request
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="chat-composer">
                 <button className="composer-action" onClick={scoreCurrentLead} disabled={isBusy} aria-label="Score current lead"><SparkleIcon /></button>
                 <button className="composer-text" onClick={scoreCurrentLead} disabled={isBusy}>
@@ -200,7 +309,24 @@ export default function Home() {
                 </button>
                 <span className="composer-hint">↵</span>
               </div>
-              <div className="chat-footnote"><LockIcon /> AI can make mistakes. Review recommendations before acting.</div>
+              <div className="chat-footnote">
+                <LockIcon /> AI can make mistakes. Review recommendations before acting.
+              </div>
+              {process.env.NODE_ENV === "development" && (
+                <label className="sabotage-control">
+                  Failure check
+                  <select
+                    aria-label="Development failure check"
+                    value={sabotageMode}
+                    onChange={(event) => updateSabotageMode(event.target.value as SabotageMode)}
+                  >
+                    <option value="off">Off</option>
+                    <option value="mid-stream">Interrupt response</option>
+                    <option value="rate-limit">Return 429</option>
+                    <option value="malformed-json">Malformed API response</option>
+                  </select>
+                </label>
+              )}
             </section>
           </div>
 
@@ -212,6 +338,19 @@ export default function Home() {
 }
 
 type ScoreLeadPart = Extract<ChatMessage["parts"][number], { type: "tool-scoreLead" }>;
+
+function ResponseSkeleton() {
+  return (
+    <div className="response-skeleton" role="status" aria-label="Waiting for Signal’s response">
+      <div className="skeleton-heading"><span /><span /></div>
+      <div className="skeleton-line skeleton-line-wide" />
+      <div className="skeleton-line skeleton-line-short" />
+      <div className="skeleton-signals">
+        <span /><span /><span />
+      </div>
+    </div>
+  );
+}
 
 function ToolPart({ part }: { part: ScoreLeadPart }) {
   if (part.state === "input-streaming") {
