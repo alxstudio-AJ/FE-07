@@ -60,6 +60,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .topbar-right { display: flex; align-items: center; gap: 17px; }
 .live-status { display: flex; align-items: center; gap: 8px; color: #707b75; font-size: 10px; }
 .live-status .status-dot { height: 5px; width: 5px; box-shadow: none; }
+.live-status.degraded { color: #9b5b4e; }
+.live-status.degraded .status-dot { background: #c37767; }
 .help-button { width: 23px; height: 23px; border-radius: 50%; border: 1px solid #e1e6e1; color: #6d7872; background: #fff; font-size: 11px; }
 .page-content { max-width: 1280px; margin: 0 auto; padding: 46px 40px 30px; }
 .page-intro { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 31px; }
@@ -183,6 +185,7 @@ h1, h2, h3, p { margin: 0; }
 .tool-error { border-color: #f0cbc5; background: #fff6f4; color: #a14a3e; }
 .tool-error .tool-state-icon { background: #fae7e3; }
 .tool-error p { color: #945c55; }
+.tool-retry-button { width: 100%; margin-top: 9px; }
 
 .score-card { margin: 8px 0; border: 1px solid #e1e9e3; border-radius: 10px; overflow: hidden; background: white; box-shadow: 0 2px 8px #1e33220a; animation: appear .2s ease both; }
 .score-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 14px 9px; }
